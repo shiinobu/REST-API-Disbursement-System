@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"encoding/csv"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -16,15 +19,16 @@ type DisbursementHandler struct {
 }
 
 type createDisbursementRequest struct {
-	BeneficiaryName string  `json:"beneficiary_name" binding:"required,min=2,max=100"`
-	BankName        string  `json:"bank_name" binding:"required,min=2,max=100"`
-	AccountNumber   string  `json:"account_number" binding:"required,numeric,min=6,max=30"`
-	Amount          float64 `json:"amount" binding:"gt=0"`
-	Description     string  `json:"description" binding:"omitempty,max=255"`
+	RecipientName string  `json:"recipient_name" binding:"required,min=2,max=100"`
+	AccountNumber string  `json:"account_number" binding:"required,numeric,min=6,max=30"`
+	BankCode      string  `json:"bank_code" binding:"required,min=2,max=100"`
+	Amount        float64 `json:"amount" binding:"gt=0"`
+	Note          string  `json:"note" binding:"omitempty,max=255"`
 }
 
-type rejectDisbursementRequest struct {
-	Reason string `json:"reason" binding:"required,min=5,max=255"`
+type updateStatusRequest struct {
+	Status string `json:"status" binding:"required,oneof=APPROVED REJECTED"`
+	Note   string `json:"note"`
 }
 
 func NewDisbursementHandler(disbursements services.DisbursementService) *DisbursementHandler {
@@ -35,18 +39,30 @@ func (h *DisbursementHandler) MountRoutes(router *gin.RouterGroup) {
 	router.GET("", h.List)
 	router.POST("", h.Create)
 	router.GET("/:id", h.Detail)
-	router.PATCH("/:id/approve", h.Approve)
-	router.PATCH("/:id/reject", h.Reject)
+	router.PATCH("/:id/status", h.UpdateStatus)
+	router.DELETE("/:id", h.Delete)
+	router.GET("/export", h.Export)
 }
 
 func (h *DisbursementHandler) List(c *gin.Context) {
-	disbursements, err := h.disbursements.List()
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+
+	result, err := h.disbursements.List(page, limit)
 	if err != nil {
 		Error(c, http.StatusInternalServerError, "Gagal mengambil data disbursement", nil)
 		return
 	}
 
-	Success(c, http.StatusOK, "Data disbursement berhasil diambil", disbursements)
+	c.JSON(http.StatusOK, gin.H{
+		"data": result.Data,
+		"meta": gin.H{
+			"page":        result.Page,
+			"limit":       result.Limit,
+			"total":       result.Total,
+			"total_pages": result.TotalPages,
+		},
+	})
 }
 
 func (h *DisbursementHandler) Create(c *gin.Context) {
@@ -63,19 +79,24 @@ func (h *DisbursementHandler) Create(c *gin.Context) {
 	}
 
 	disbursement, err := h.disbursements.Create(services.CreateDisbursementInput{
-		RequesterID:     userID,
-		BeneficiaryName: request.BeneficiaryName,
-		BankName:        request.BankName,
-		AccountNumber:   request.AccountNumber,
-		Amount:          request.Amount,
-		Description:     request.Description,
+		RequesterID:   userID,
+		RecipientName: request.RecipientName,
+		BankCode:      request.BankCode,
+		AccountNumber: request.AccountNumber,
+		Amount:        request.Amount,
+		Note:          request.Note,
 	})
 	if err != nil {
-		Error(c, http.StatusInternalServerError, "Gagal membuat disbursement", nil)
-		return
+		switch {
+		case errors.Is(err, services.ErrDisbursementAmountTooLow):
+			Error(c, http.StatusBadRequest, "Jumlah disbursement harus lebih dari 10.000", nil)
+		default:
+			Error(c, http.StatusInternalServerError, "Gagal membuat disbursement", nil)
+		}
+	} else {
+		Success(c, http.StatusCreated, "Disbursement berhasil dibuat", disbursement)
 	}
 
-	Success(c, http.StatusCreated, "Disbursement berhasil dibuat", disbursement)
 }
 
 func (h *DisbursementHandler) Detail(c *gin.Context) {
@@ -93,7 +114,13 @@ func (h *DisbursementHandler) Detail(c *gin.Context) {
 	Success(c, http.StatusOK, "Detail disbursement berhasil diambil", disbursement)
 }
 
-func (h *DisbursementHandler) Approve(c *gin.Context) {
+func (h *DisbursementHandler) UpdateStatus(c *gin.Context) {
+	role, ok := currentUserRole(c)
+	if !ok {
+		Error(c, http.StatusForbidden, "Forbidden", nil)
+		return
+	}
+
 	userID, ok := currentUserID(c)
 	if !ok {
 		Error(c, http.StatusUnauthorized, "Token tidak valid", nil)
@@ -105,40 +132,86 @@ func (h *DisbursementHandler) Approve(c *gin.Context) {
 		return
 	}
 
-	disbursement, err := h.disbursements.Approve(id, userID)
-	if err != nil {
-		handleDisbursementError(c, err)
-		return
-	}
-
-	Success(c, http.StatusOK, "Disbursement berhasil disetujui", disbursement)
-}
-
-func (h *DisbursementHandler) Reject(c *gin.Context) {
-	userID, ok := currentUserID(c)
-	if !ok {
-		Error(c, http.StatusUnauthorized, "Token tidak valid", nil)
-		return
-	}
-
-	id, ok := disbursementID(c)
-	if !ok {
-		return
-	}
-
-	var request rejectDisbursementRequest
+	var request updateStatusRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		ValidationError(c, err, request)
 		return
 	}
 
-	disbursement, err := h.disbursements.Reject(id, userID, request.Reason)
+	disbursement, err := h.disbursements.UpdateStatus(
+		id,
+		userID,
+		role,
+		request.Status,
+		request.Note,
+	)
+
 	if err != nil {
 		handleDisbursementError(c, err)
 		return
 	}
 
-	Success(c, http.StatusOK, "Disbursement berhasil ditolak", disbursement)
+	Success(c, http.StatusOK, "Status disbursement berhasil diperbarui", disbursement)
+}
+
+func (h *DisbursementHandler) Delete(c *gin.Context) {
+	id, ok := disbursementID(c)
+	if !ok {
+		return
+	}
+
+	err := h.disbursements.Delete(id)
+	if err != nil {
+		handleDisbursementError(c, err)
+		return
+	}
+
+	Success(c, http.StatusOK, "Disbursement berhasil dihapus", nil)
+}
+
+func (h *DisbursementHandler) Export(c *gin.Context) {
+
+	status := c.Query("status")
+
+	disbursements, err := h.disbursements.Export(status)
+	if err != nil {
+		handleDisbursementError(c, err)
+		return
+	}
+
+	filename := fmt.Sprintf(
+		"disbursements_%s.csv",
+		time.Now().Format("20060102_150405"),
+	)
+
+	c.Header("Content-Type", "text/csv")
+	c.Header(
+		"Content-Disposition",
+		fmt.Sprintf(`attachment; filename="%s"`, filename),
+	)
+
+	writer := csv.NewWriter(c.Writer)
+	defer writer.Flush()
+
+	writer.Write([]string{
+		"ID",
+		"Recipient Name",
+		"Account Number",
+		"Amount",
+		"Status",
+		"Created At",
+	})
+
+	for _, d := range disbursements {
+		writer.Write([]string{
+			fmt.Sprintf("%d", d.ID),
+			d.RecipientName,
+			d.AccountNumber,
+			fmt.Sprintf("%.2f", d.Amount),
+			string(d.Status),
+			d.CreatedAt.Format(time.RFC3339),
+		})
+	}
 }
 
 func currentUserID(c *gin.Context) (uint, bool) {
@@ -161,12 +234,28 @@ func disbursementID(c *gin.Context) (uint, bool) {
 	return uint(id), true
 }
 
+func currentUserRole(c *gin.Context) (string, bool) {
+	value, exists := c.Get(middleware.UserRoleKey)
+	if !exists {
+		return "", false
+	}
+
+	role, ok := value.(string)
+	return role, ok
+}
+
 func handleDisbursementError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, services.ErrForbidden):
+		Error(c, http.StatusForbidden, "Anda tidak memiliki akses", nil)
 	case errors.Is(err, services.ErrDisbursementNotFound):
 		Error(c, http.StatusNotFound, "Disbursement tidak ditemukan", gin.H{"id": "disbursement tidak ditemukan"})
 	case errors.Is(err, services.ErrDisbursementAlreadyProcessed):
 		Error(c, http.StatusConflict, "Disbursement sudah diproses", gin.H{"status": "hanya disbursement pending yang dapat diproses"})
+	case errors.Is(err, services.ErrInvalidDisbursementStatus):
+		Error(c, http.StatusBadRequest, "Status disbursement tidak valid", gin.H{"status": "status harus APPROVED atau REJECTED"})
+	case errors.Is(err, services.ErrDisbursementCannotBeDeleted):
+		Error(c, http.StatusBadRequest, "Disbursement tidak dapat dihapus", gin.H{"status": "hanya disbursement dengan status PENDING yang dapat dihapus"})
 	default:
 		Error(c, http.StatusInternalServerError, "Gagal memproses disbursement", nil)
 	}

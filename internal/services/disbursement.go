@@ -2,9 +2,11 @@ package services
 
 import (
 	"errors"
+	"strings"
 
 	"gorm.io/gorm"
 
+	"math"
 	"rest-api-disbursement-system/internal/models"
 	"rest-api-disbursement-system/internal/repository"
 )
@@ -12,23 +14,36 @@ import (
 var (
 	ErrDisbursementNotFound         = errors.New("disbursement tidak ditemukan")
 	ErrDisbursementAlreadyProcessed = errors.New("disbursement sudah diproses")
+	ErrDisbursementAmountTooLow     = errors.New("jumlah disbursement harus lebih dari 10.000")
+	ErrInvalidDisbursementStatus    = errors.New("status disbursement tidak valid")
+	ErrForbidden                    = errors.New("forbidden")
+	ErrDisbursementCannotBeDeleted  = errors.New("disbursement tidak dapat dihapus")
 )
 
 type DisbursementService interface {
 	Create(input CreateDisbursementInput) (*models.Disbursement, error)
-	List() ([]models.Disbursement, error)
+	List(page, limit int) (*DisbursementListResult, error)
 	Detail(id uint) (*models.Disbursement, error)
-	Approve(id uint, userID uint) (*models.Disbursement, error)
-	Reject(id uint, userID uint, reason string) (*models.Disbursement, error)
+	UpdateStatus(id uint, userID uint, role string, status string, note string) (*models.Disbursement, error)
+	Delete(id uint) error
+	Export(status string) ([]models.Disbursement, error)
 }
 
 type CreateDisbursementInput struct {
-	RequesterID     uint
-	BeneficiaryName string
-	BankName        string
-	AccountNumber   string
-	Amount          float64
-	Description     string
+	RequesterID   uint
+	RecipientName string
+	BankCode      string
+	AccountNumber string
+	Amount        float64
+	Note          string
+}
+
+type DisbursementListResult struct {
+	Data       []models.Disbursement
+	Page       int
+	Limit      int
+	Total      int64
+	TotalPages int
 }
 
 type disbursementService struct {
@@ -40,14 +55,18 @@ func NewDisbursementService(disbursements repository.DisbursementRepository) Dis
 }
 
 func (s *disbursementService) Create(input CreateDisbursementInput) (*models.Disbursement, error) {
+	if input.Amount < 10000 {
+		return nil, ErrDisbursementAmountTooLow
+	}
+
 	disbursement := &models.Disbursement{
-		RequesterID:     input.RequesterID,
-		BeneficiaryName: input.BeneficiaryName,
-		BankName:        input.BankName,
-		AccountNumber:   input.AccountNumber,
-		Amount:          input.Amount,
-		Description:     input.Description,
-		Status:          models.StatusPending,
+		RequesterID:   input.RequesterID,
+		RecipientName: input.RecipientName,
+		BankCode:      input.BankCode,
+		AccountNumber: input.AccountNumber,
+		Amount:        input.Amount,
+		Note:          input.Note,
+		Status:        models.StatusPending,
 	}
 
 	if err := s.disbursements.Create(disbursement); err != nil {
@@ -57,8 +76,22 @@ func (s *disbursementService) Create(input CreateDisbursementInput) (*models.Dis
 	return s.Detail(disbursement.ID)
 }
 
-func (s *disbursementService) List() ([]models.Disbursement, error) {
-	return s.disbursements.FindAll()
+func (s *disbursementService) List(page, limit int) (*DisbursementListResult, error) {
+	data, total, err := s.disbursements.FindAll(page, limit)
+
+	if err != nil {
+		return nil, err
+	}
+
+	totalPages := int(math.Ceil(float64(total) / float64(limit)))
+
+	return &DisbursementListResult{
+		Data:       data,
+		Page:       page,
+		Limit:      limit,
+		Total:      total,
+		TotalPages: totalPages,
+	}, nil
 }
 
 func (s *disbursementService) Detail(id uint) (*models.Disbursement, error) {
@@ -73,18 +106,32 @@ func (s *disbursementService) Detail(id uint) (*models.Disbursement, error) {
 	return disbursement, nil
 }
 
-func (s *disbursementService) Approve(id uint, userID uint) (*models.Disbursement, error) {
+func (s *disbursementService) UpdateStatus(id, userID uint, role, status, note string) (*models.Disbursement, error) {
+	if strings.ToUpper(role) != "ADMIN" {
+		return nil, ErrForbidden
+	}
+
 	disbursement, err := s.Detail(id)
 	if err != nil {
 		return nil, err
 	}
+
 	if disbursement.Status != models.StatusPending {
 		return nil, ErrDisbursementAlreadyProcessed
 	}
 
-	disbursement.Status = models.StatusApproved
-	disbursement.ProcessedByID = &userID
-	disbursement.RejectionReason = nil
+	switch status {
+	case string(models.StatusApproved):
+		disbursement.Status = models.StatusApproved
+		disbursement.ProcessedByID = &userID
+		disbursement.RejectionReason = nil
+	case string(models.StatusRejected):
+		disbursement.Status = models.StatusRejected
+		disbursement.ProcessedByID = &userID
+		disbursement.RejectionReason = &note
+	default:
+		return nil, ErrInvalidDisbursementStatus
+	}
 
 	if err := s.disbursements.Update(disbursement); err != nil {
 		return nil, err
@@ -93,22 +140,28 @@ func (s *disbursementService) Approve(id uint, userID uint) (*models.Disbursemen
 	return s.Detail(id)
 }
 
-func (s *disbursementService) Reject(id uint, userID uint, reason string) (*models.Disbursement, error) {
+func (s *disbursementService) Delete(id uint) error {
 	disbursement, err := s.Detail(id)
 	if err != nil {
-		return nil, err
+		return err
 	}
+
 	if disbursement.Status != models.StatusPending {
-		return nil, ErrDisbursementAlreadyProcessed
+		return ErrDisbursementCannotBeDeleted
 	}
 
-	disbursement.Status = models.StatusRejected
-	disbursement.ProcessedByID = &userID
-	disbursement.RejectionReason = &reason
+	return s.disbursements.Delete(id)
+}
 
-	if err := s.disbursements.Update(disbursement); err != nil {
-		return nil, err
+func (s *disbursementService) Export(status string) ([]models.Disbursement, error) {
+	switch status {
+	case "":
+	case string(models.StatusPending):
+	case string(models.StatusApproved):
+	case string(models.StatusRejected):
+	default:
+		return nil, ErrInvalidDisbursementStatus
 	}
 
-	return s.Detail(id)
+	return s.disbursements.Export(status)
 }

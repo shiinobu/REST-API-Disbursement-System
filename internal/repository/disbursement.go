@@ -8,9 +8,11 @@ import (
 
 type DisbursementRepository interface {
 	Create(disbursement *models.Disbursement) error
-	FindAll() ([]models.Disbursement, error)
+	FindAll(page, limit int) ([]models.Disbursement, int64, error)
 	FindByID(id uint) (*models.Disbursement, error)
 	Update(disbursement *models.Disbursement) error
+	Delete(id uint) error
+	Export(status string) ([]models.Disbursement, error)
 }
 
 type disbursementRepository struct {
@@ -25,16 +27,30 @@ func (r *disbursementRepository) Create(disbursement *models.Disbursement) error
 	return r.db.Create(disbursement).Error
 }
 
-func (r *disbursementRepository) FindAll() ([]models.Disbursement, error) {
+func (r *disbursementRepository) FindAll(page, limit int) ([]models.Disbursement, int64, error) {
 	var disbursements []models.Disbursement
+	var total int64
+
+	if err := r.db.Model(&models.Disbursement{}).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	offset := (page - 1) * limit
+
 	err := r.db.
 		Preload("Requester").
 		Preload("ProcessedBy").
 		Order("created_at DESC").
+		Limit(limit).
+		Offset(offset).
 		Find(&disbursements).
 		Error
 
-	return disbursements, err
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return disbursements, total, err
 }
 
 func (r *disbursementRepository) FindByID(id uint) (*models.Disbursement, error) {
@@ -52,4 +68,22 @@ func (r *disbursementRepository) FindByID(id uint) (*models.Disbursement, error)
 
 func (r *disbursementRepository) Update(disbursement *models.Disbursement) error {
 	return r.db.Save(disbursement).Error
+}
+
+func (r *disbursementRepository) Delete(id uint) error {
+	return r.db.Delete(&models.Disbursement{}, id).Error
+}
+
+func (r *disbursementRepository) Export(status string) ([]models.Disbursement, error) {
+	var disbursements []models.Disbursement
+	err := r.db.
+		Preload("Requester").
+		Preload("ProcessedBy").
+		Where("status = ?", status).
+		Find(&disbursements).
+		Error
+	if err != nil {
+		return nil, err
+	}
+	return disbursements, nil
 }
