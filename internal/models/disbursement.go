@@ -27,6 +27,7 @@ type Disbursement struct {
 	BankCode        string             `gorm:"size:100;not null" json:"bank_code"`
 	AccountNumber   string             `gorm:"size:30;not null" json:"account_number"`
 	Amount          float64            `gorm:"type:decimal(15,2);not null" json:"amount"`
+	AdminFee        float64            `gorm:"type:decimal(15,2);not null;default:0" json:"admin_fee"`
 	Note            string             `gorm:"type:text" json:"note"`
 	Status          DisbursementStatus `gorm:"type:varchar(20);not null;default:'PENDING';index" json:"status"`
 	ProcessedByID   *uint              `gorm:"index" json:"processed_by_id,omitempty"`

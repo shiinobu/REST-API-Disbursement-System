@@ -47,8 +47,9 @@ func (h *DisbursementHandler) MountRoutes(router *gin.RouterGroup) {
 func (h *DisbursementHandler) List(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	search := c.Query("search")
 
-	result, err := h.disbursements.List(page, limit)
+	result, err := h.disbursements.List(page, limit, search)
 	if err != nil {
 		Error(c, http.StatusInternalServerError, "Gagal mengambil data disbursement", nil)
 		return

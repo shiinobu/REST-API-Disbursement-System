@@ -8,7 +8,7 @@ import (
 
 type DisbursementRepository interface {
 	Create(disbursement *models.Disbursement) error
-	FindAll(page, limit int) ([]models.Disbursement, int64, error)
+	FindAll(page, limit int, search string) ([]models.Disbursement, int64, error)
 	FindByID(id uint) (*models.Disbursement, error)
 	Update(disbursement *models.Disbursement) error
 	Delete(id uint) error
@@ -27,17 +27,24 @@ func (r *disbursementRepository) Create(disbursement *models.Disbursement) error
 	return r.db.Create(disbursement).Error
 }
 
-func (r *disbursementRepository) FindAll(page, limit int) ([]models.Disbursement, int64, error) {
+func (r *disbursementRepository) FindAll(page, limit int, search string) ([]models.Disbursement, int64, error) {
 	var disbursements []models.Disbursement
 	var total int64
 
-	if err := r.db.Model(&models.Disbursement{}).Count(&total).Error; err != nil {
+	query := r.db.Model(&models.Disbursement{})
+
+	if search != "" {
+		searchTerm := "%" + search + "%"
+		query = query.Where("recipient_name LIKE ?", searchTerm)
+	}
+
+	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	offset := (page - 1) * limit
 
-	err := r.db.
+	err := query.
 		Preload("Requester").
 		Preload("ProcessedBy").
 		Order("created_at DESC").

@@ -22,7 +22,7 @@ var (
 
 type DisbursementService interface {
 	Create(input CreateDisbursementInput) (*models.Disbursement, error)
-	List(page, limit int) (*DisbursementListResult, error)
+	List(page, limit int, search string) (*DisbursementListResult, error)
 	Detail(id uint) (*models.Disbursement, error)
 	UpdateStatus(id uint, userID uint, role string, status string, note string) (*models.Disbursement, error)
 	Delete(id uint) error
@@ -59,12 +59,20 @@ func (s *disbursementService) Create(input CreateDisbursementInput) (*models.Dis
 		return nil, ErrDisbursementAmountTooLow
 	}
 
+	var adminFee float64
+	if input.Amount >= 5000000 {
+		adminFee = 5000
+	} else {
+		adminFee = 2500
+	}
+
 	disbursement := &models.Disbursement{
 		RequesterID:   input.RequesterID,
 		RecipientName: input.RecipientName,
 		BankCode:      input.BankCode,
 		AccountNumber: input.AccountNumber,
 		Amount:        input.Amount,
+		AdminFee:      adminFee,
 		Note:          input.Note,
 		Status:        models.StatusPending,
 	}
@@ -76,8 +84,8 @@ func (s *disbursementService) Create(input CreateDisbursementInput) (*models.Dis
 	return s.Detail(disbursement.ID)
 }
 
-func (s *disbursementService) List(page, limit int) (*DisbursementListResult, error) {
-	data, total, err := s.disbursements.FindAll(page, limit)
+func (s *disbursementService) List(page, limit int, search string) (*DisbursementListResult, error) {
+	data, total, err := s.disbursements.FindAll(page, limit, search)
 
 	if err != nil {
 		return nil, err
