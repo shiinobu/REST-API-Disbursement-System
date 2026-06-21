@@ -5,11 +5,27 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"github.com/go-playground/validator/v10"
 )
+
+func init() {
+	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
+		_ = v.RegisterValidation("gt0", func(fl validator.FieldLevel) bool {
+			value := fl.Field().String()
+			amount, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return false
+			}
+
+			return amount > 0
+		})
+	}
+}
 
 func ValidationError(c *gin.Context, err error, request any) {
 	Error(c, http.StatusBadRequest, "Request tidak valid", validationMessages(err, request))
@@ -42,6 +58,8 @@ func validationMessage(fieldError validator.FieldError) string {
 		return fmt.Sprintf("maksimal %s karakter", fieldError.Param())
 	case "gt":
 		return fmt.Sprintf("harus lebih besar dari %s", fieldError.Param())
+	case "gt0":
+		return "harus lebih besar dari 0"
 	case "numeric":
 		return "hanya boleh berisi angka"
 	default:

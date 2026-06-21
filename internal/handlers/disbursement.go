@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,11 +20,34 @@ type DisbursementHandler struct {
 }
 
 type createDisbursementRequest struct {
-	RecipientName string  `json:"recipient_name" binding:"required,min=2,max=100"`
-	AccountNumber string  `json:"account_number" binding:"required,numeric,min=6,max=30"`
-	BankCode      string  `json:"bank_code" binding:"required,min=2,max=100"`
-	Amount        float64 `json:"amount" binding:"gt=0"`
-	Note          string  `json:"note" binding:"omitempty,max=255"`
+	RecipientName string       `json:"recipient_name" binding:"required,min=2,max=100"`
+	AccountNumber string       `json:"account_number" binding:"required,numeric,min=6,max=30"`
+	BankCode      string       `json:"bank_code" binding:"required,min=2,max=100"`
+	Amount        amountString `json:"amount" binding:"required,numeric,gt0"`
+	Note          string       `json:"note" binding:"omitempty,max=255"`
+}
+
+type amountString string
+
+func (a *amountString) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*a = ""
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*a = amountString(s)
+		return nil
+	}
+
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err == nil {
+		*a = amountString(n.String())
+		return nil
+	}
+
+	return nil
 }
 
 type updateStatusRequest struct {
@@ -48,10 +72,16 @@ func (h *DisbursementHandler) List(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	search := c.Query("search")
+	status := c.Query("status")
 
-	result, err := h.disbursements.List(page, limit, search)
+	result, err := h.disbursements.List(page, limit, search, status)
 	if err != nil {
-		Error(c, http.StatusInternalServerError, "Gagal mengambil data disbursement", nil)
+		switch {
+		case errors.Is(err, services.ErrInvalidDisbursementStatus):
+			Error(c, http.StatusBadRequest, "Request tidak valid", gin.H{"status": "status disbursement tidak valid"})
+		default:
+			Error(c, http.StatusInternalServerError, "Gagal mengambil data disbursement", nil)
+		}
 		return
 	}
 
@@ -79,12 +109,18 @@ func (h *DisbursementHandler) Create(c *gin.Context) {
 		return
 	}
 
+	amount, err := strconv.ParseFloat(string(request.Amount), 64)
+	if err != nil {
+		Error(c, http.StatusBadRequest, "Request tidak valid", gin.H{"amount": "nilai tidak valid"})
+		return
+	}
+
 	disbursement, err := h.disbursements.Create(services.CreateDisbursementInput{
 		RequesterID:   userID,
 		RecipientName: request.RecipientName,
 		BankCode:      request.BankCode,
 		AccountNumber: request.AccountNumber,
-		Amount:        request.Amount,
+		Amount:        amount,
 		Note:          request.Note,
 	})
 	if err != nil {

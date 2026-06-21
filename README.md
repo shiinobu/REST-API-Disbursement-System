@@ -143,6 +143,12 @@ List:
 GET /api/disbursements
 ```
 
+Filter by status:
+
+```http
+GET /api/disbursements?status=PENDING
+```
+
 Create:
 
 ```http
