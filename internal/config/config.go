@@ -21,8 +21,13 @@ type Config struct {
 	JWTExpiresInHours int
 }
 
-func Load() Config {
+func Load() (Config, error) {
 	_ = godotenv.Load()
+
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		return Config{}, fmt.Errorf("JWT_SECRET environment variable is required")
+	}
 
 	return Config{
 		AppPort:           getEnv("APP_PORT", "8080"),
@@ -31,9 +36,9 @@ func Load() Config {
 		DBUser:            getEnv("DB_USER", "root"),
 		DBPassword:        getEnv("DB_PASSWORD", "root"),
 		DBName:            getEnv("DB_NAME", "disbursement_db"),
-		JWTSecret:         getEnv("JWT_SECRET", "Linux1234"),
+		JWTSecret:         jwtSecret,
 		JWTExpiresInHours: getEnvAsInt("JWT_EXPIRES_IN_HOURS", 24),
-	}
+	}, nil
 }
 
 func ConnectDatabase(cfg Config) (*gorm.DB, error) {
