@@ -25,16 +25,17 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 			return
 		}
 
-		tokenString := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-		if tokenString == authHeader || tokenString == "" {
+		parts := strings.Fields(authHeader)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			errorResponse(c, http.StatusUnauthorized, "Format token tidak valid", gin.H{"authorization": "gunakan format Bearer token"})
 			c.Abort()
 			return
 		}
 
+		tokenString := parts[1]
 		claims := &services.JWTClaims{}
 		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (any, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			if token.Method != jwt.SigningMethodHS256 {
 				return nil, jwt.ErrSignatureInvalid
 			}
 			return []byte(jwtSecret), nil
